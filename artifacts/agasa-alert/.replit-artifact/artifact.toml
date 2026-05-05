@@ -1,0 +1,26 @@
+kind = "mobile"
+previewPath = "/"
+title = "AGASA Alert"
+version = "1.0.0"
+id = "artifacts/agasa-alert"
+router = "expo-domain"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+name = "expo"
+paths = [ "/" ]
+localPort = 18385
+
+[services.development]
+run = "pnpm --filter @workspace/agasa-alert run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/agasa-alert", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/agasa-alert", "run", "serve" ]
+
+[services.env]
+PORT = "18385"
+BASE_PATH = "/"
