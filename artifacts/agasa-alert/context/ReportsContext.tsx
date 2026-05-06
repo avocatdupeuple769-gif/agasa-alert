@@ -1,9 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { AppState, AppStateStatus, Platform } from "react-native";
+import { AppState, AppStateStatus } from "react-native";
 
 import { DangerLevel, GeoLocation, Report, Reporter, ReportStatus, ReportType } from "@/constants/types";
-import { uploadMedia } from "@/lib/supabase";
+import { supabase, isSupabaseConfigured, uploadMedia } from "@/lib/supabase";
 
 const STORAGE_KEY = "agasa_reports";
 const POLL_INTERVAL_MS = 15_000;
@@ -11,12 +11,6 @@ const EXPIRY_MS = 3 * 30 * 24 * 60 * 60 * 1000;
 
 function isNotExpired(report: Report): boolean {
   return Date.now() - new Date(report.date).getTime() < EXPIRY_MS;
-}
-
-function getApiBase(): string {
-  if (Platform.OS === "web") return "/api";
-  const domain = process.env.EXPO_PUBLIC_DOMAIN ?? "";
-  return domain ? `https://${domain}/api` : "/api";
 }
 
 function rowToReport(row: Record<string, unknown>): Report {
@@ -71,20 +65,23 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
-  /* ── Fetch depuis l'API server (clé service_role côté serveur → bypass RLS) ── */
-  const fetchFromApi = useCallback(async () => {
+  /* ── Fetch directement depuis Supabase (RLS désactivé) ── */
+  const fetchFromSupabase = useCallback(async () => {
+    if (!isSupabaseConfigured) return;
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     try {
-      const res = await fetch(`${getApiBase()}/reports`, {
-        headers: { "Accept": "application/json" },
-      });
-      if (!res.ok) {
-        console.warn("[Reports] Erreur API", res.status);
+      const { data, error } = await supabase
+        .from("reports")
+        .select("*")
+        .order("date", { ascending: false });
+
+      if (error) {
+        console.warn("[Reports] Erreur Supabase:", error.message);
         return;
       }
-      const data = (await res.json()) as Record<string, unknown>[];
-      const serverReports = data
+
+      const serverReports = (data as Record<string, unknown>[])
         .map(rowToReport)
         .filter(isNotExpired);
 
@@ -99,7 +96,7 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
         return merged;
       });
     } catch (err) {
-      console.warn("[Reports] Exception fetchFromApi:", err);
+      console.warn("[Reports] Exception fetch:", err);
     } finally {
       isFetchingRef.current = false;
     }
@@ -107,22 +104,22 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
 
   /* ── Chargement initial ── */
   useEffect(() => {
-    fetchFromApi();
-  }, [fetchFromApi]);
+    fetchFromSupabase();
+  }, [fetchFromSupabase]);
 
   /* ── Polling automatique toutes les 15 secondes ── */
   useEffect(() => {
-    const timer = setInterval(fetchFromApi, POLL_INTERVAL_MS);
+    const timer = setInterval(fetchFromSupabase, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [fetchFromApi]);
+  }, [fetchFromSupabase]);
 
   /* ── Rechargement quand l'app revient au premier plan ── */
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
-      if (next === "active") fetchFromApi();
+      if (next === "active") fetchFromSupabase();
     });
     return () => sub.remove();
-  }, [fetchFromApi]);
+  }, [fetchFromSupabase]);
 
   const persist = useCallback(async (updated: Report[]) => {
     try {
@@ -176,34 +173,29 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
         return updated;
       });
 
-      try {
-        const res = await fetch(`${getApiBase()}/reports`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id,
-            type: data.type,
-            description: data.description,
-            photos: uploadedPhotos,
-            videos: uploadedVideos,
-            location: data.location,
-            status: "pending",
-            danger_level: data.dangerLevel,
-            reporter: data.reporter ?? null,
-            price_amount: data.priceAmount ?? null,
-            is_synced: true,
-            date: newReport.date,
-          }),
+      /* Insérer dans Supabase */
+      if (isSupabaseConfigured) {
+        const { error } = await supabase.from("reports").insert({
+          id,
+          type: data.type,
+          description: data.description,
+          photos: uploadedPhotos,
+          videos: uploadedVideos,
+          location: data.location,
+          status: "pending",
+          danger_level: data.dangerLevel,
+          reporter: data.reporter ?? null,
+          price_amount: data.priceAmount ?? null,
+          date: newReport.date,
         });
-        if (res.ok) {
+
+        if (error) {
+          console.warn("[Reports] Erreur INSERT Supabase:", error.message);
+        } else {
           setReports((prev) =>
             prev.map((r) => (r.id === id ? { ...r, isSynced: true } : r))
           );
-        } else {
-          console.warn("[Reports] Erreur POST /api/reports", res.status);
         }
-      } catch (err) {
-        console.warn("[Reports] Exception POST:", err);
       }
 
       return id;
@@ -218,11 +210,16 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
         persist(updated);
         return updated;
       });
-      fetch(`${getApiBase()}/reports/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
-      }).catch((err) => console.warn("[Reports] Exception PATCH:", err));
+
+      if (isSupabaseConfigured) {
+        supabase
+          .from("reports")
+          .update({ status })
+          .eq("id", id)
+          .then(({ error }) => {
+            if (error) console.warn("[Reports] Erreur UPDATE Supabase:", error.message);
+          });
+      }
     },
     [persist]
   );
@@ -239,7 +236,7 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
         addReport,
         updateReportStatus,
         getReportById,
-        refresh: fetchFromApi,
+        refresh: fetchFromSupabase,
       }}
     >
       {children}
