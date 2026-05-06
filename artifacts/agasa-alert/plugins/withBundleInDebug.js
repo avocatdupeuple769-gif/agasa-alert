@@ -1,35 +1,50 @@
 /**
- * Plugin Expo : force le bundling JS dans les builds debug.
+ * Plugin Expo : force le bundling JS dans les builds debug Android.
  *
- * POURQUOI CE PLUGIN :
- * Par défaut, Expo SDK 54 configure les builds Android debug pour se connecter
- * à un serveur Metro (Expo Go / développement). Le JS n'est PAS bundlé dans l'APK.
- * Résultat : l'APK installé seul sur un téléphone ne charge jamais le JS et
- * l'écran de démarrage reste bloqué indéfiniment.
+ * PROBLÈME :
+ * En Expo SDK 54, les builds debug Android sont configurés pour se connecter
+ * à un serveur Metro dev (Expo Go). Le JS n'est PAS bundlé dans l'APK.
+ * Résultat : l'APK standalone ne charge jamais le JS → écran de démarrage bloqué.
  *
- * La propriété `debuggableVariants = []` dans le bloc `react {}` de build.gradle
- * indique à React Native de bundler le JS pour TOUTES les variantes (y compris debug).
+ * SOLUTION :
+ * `debuggableVariants = []` dans le bloc `react {}` de android/app/build.gradle
+ * dit à React Native de bundler le JS pour TOUTES les variantes (debug + release).
  *
- * Ref : https://reactnative.dev/docs/gradle-configuration-android#debuggablevariants
+ * IMPORTANT – résolution de module pnpm :
+ * Ce plugin est chargé dans deux contextes :
+ *   1. `expo prebuild` : @expo/config-plugins est résolvable → on modifie build.gradle ✅
+ *   2. Gradle tâche `expo-constants:createExpoConfig` : le contexte Node.js ne peut pas
+ *      résoudre @expo/config-plugins depuis ce chemin. On retourne config inchangé ✅
+ *      (build.gradle est déjà modifié depuis l'étape prebuild).
  */
 
-const { withAppBuildGradle } = require("@expo/config-plugins");
+let withAppBuildGradle = null;
+try {
+  withAppBuildGradle = require("@expo/config-plugins").withAppBuildGradle;
+} catch (_e) {
+  // Contexte Gradle : @expo/config-plugins n'est pas résolvable depuis ce chemin.
+  // La modification de build.gradle a déjà été faite pendant expo prebuild.
+}
 
 module.exports = function withBundleInDebug(config) {
+  if (!withAppBuildGradle) {
+    return config;
+  }
+
   return withAppBuildGradle(config, (mod) => {
     let contents = mod.modResults.contents;
 
     if (contents.includes("debuggableVariants")) {
-      // Déjà présent → s'assurer que c'est une liste vide
+      // Déjà présent → forcer la liste vide
       contents = contents.replace(
         /debuggableVariants\s*=\s*\[[^\]]*\]/,
         "debuggableVariants = []"
       );
     } else if (/react\s*\{/.test(contents)) {
-      // Ajouter comme première ligne dans le bloc react { }
+      // Ajouter dans le bloc react { }
       contents = contents.replace(
         /react\s*\{/,
-        "react {\n        // Force JS bundling in debug builds (standalone APK)\n        debuggableVariants = []"
+        "react {\n        // Force JS bundling for all build types (including debug)\n        debuggableVariants = []"
       );
     }
 
