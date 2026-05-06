@@ -19,7 +19,7 @@
     },
     "android": {
       "package": "ga.agasa.alert",
-      "versionCode": 7,
+      "versionCode": 8,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
@@ -31,6 +31,7 @@
       "favicon": "./assets/images/icon.png"
     },
     "plugins": [
+      "./plugins/withBundleInDebug",
       [
         "expo-router",
         {
