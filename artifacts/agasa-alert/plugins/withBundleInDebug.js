@@ -1,54 +1,60 @@
 /**
  * Plugin Expo : force le bundling JS dans les builds debug Android.
  *
- * PROBLÈME :
- * En Expo SDK 54, les builds debug Android sont configurés pour se connecter
- * à un serveur Metro dev (Expo Go). Le JS n'est PAS bundlé dans l'APK.
- * Résultat : l'APK standalone ne charge jamais le JS → écran de démarrage bloqué.
+ * PROBLÈME RACINE :
+ * En Expo SDK 54, `debuggableVariants = ["debug"]` (valeur par défaut).
+ * Les builds debug attendent de se connecter à un serveur Metro dev.
+ * => L'APK standalone n'exécute jamais de JS => écran bloqué.
  *
  * SOLUTION :
- * `debuggableVariants = []` dans le bloc `react {}` de android/app/build.gradle
- * dit à React Native de bundler le JS pour TOUTES les variantes (debug + release).
+ * Ajouter `debuggableVariants = []` dans le bloc `react {}` de build.gradle.
+ * Cela force Metro à bundler le JS pour TOUTES les variantes.
  *
- * IMPORTANT – résolution de module pnpm :
- * Ce plugin est chargé dans deux contextes :
- *   1. `expo prebuild` : @expo/config-plugins est résolvable → on modifie build.gradle ✅
- *   2. Gradle tâche `expo-constants:createExpoConfig` : le contexte Node.js ne peut pas
- *      résoudre @expo/config-plugins depuis ce chemin. On retourne config inchangé ✅
- *      (build.gradle est déjà modifié depuis l'étape prebuild).
+ * IMPLÉMENTATION SANS require('@expo/config-plugins') :
+ * Dans un workspace pnpm, @expo/config-plugins est une dépendance transitive
+ * et n'est pas directement résolvable depuis le fichier plugin dans tous
+ * les contextes (prebuild OK, Gradle task KO). On manipule config.mods directement,
+ * ce qui est exactement ce que withAppBuildGradle() fait en interne.
  */
 
-let withAppBuildGradle = null;
-try {
-  withAppBuildGradle = require("@expo/config-plugins").withAppBuildGradle;
-} catch (_e) {
-  // Contexte Gradle : @expo/config-plugins n'est pas résolvable depuis ce chemin.
-  // La modification de build.gradle a déjà été faite pendant expo prebuild.
-}
-
 module.exports = function withBundleInDebug(config) {
-  if (!withAppBuildGradle) {
-    return config;
-  }
+  // Sauvegarder le mod précédent pour le chaînage
+  const prevAndroid = (config.mods && config.mods.android) || {};
+  const prevAppBuildGradle = prevAndroid.appBuildGradle || null;
 
-  return withAppBuildGradle(config, (mod) => {
-    let contents = mod.modResults.contents;
+  return {
+    ...config,
+    mods: {
+      ...config.mods,
+      android: {
+        ...prevAndroid,
+        appBuildGradle: async (props) => {
+          // Appliquer le mod précédent en premier (chaînage)
+          let result = props;
+          if (prevAppBuildGradle) {
+            result = await prevAppBuildGradle(result);
+          }
 
-    if (contents.includes("debuggableVariants")) {
-      // Déjà présent → forcer la liste vide
-      contents = contents.replace(
-        /debuggableVariants\s*=\s*\[[^\]]*\]/,
-        "debuggableVariants = []"
-      );
-    } else if (/react\s*\{/.test(contents)) {
-      // Ajouter dans le bloc react { }
-      contents = contents.replace(
-        /react\s*\{/,
-        "react {\n        // Force JS bundling for all build types (including debug)\n        debuggableVariants = []"
-      );
-    }
+          let contents = result.modResults.contents;
 
-    mod.modResults.contents = contents;
-    return mod;
-  });
+          if (contents.includes("debuggableVariants")) {
+            // Déjà présent → forcer la liste vide
+            contents = contents.replace(
+              /debuggableVariants\s*=\s*\[[^\]]*\]/,
+              "debuggableVariants = []"
+            );
+          } else if (/react\s*\{/.test(contents)) {
+            // Ajouter comme première ligne dans le bloc react { }
+            contents = contents.replace(
+              /react\s*\{/,
+              "react {\n        // Force JS bundle in all build types (no Metro dev server)\n        debuggableVariants = []"
+            );
+          }
+
+          result.modResults.contents = contents;
+          return result;
+        },
+      },
+    },
+  };
 };
