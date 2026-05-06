@@ -1,3 +1,10 @@
+/**
+ * Layout racine Expo Router.
+ *
+ * NOTE : SplashScreen.preventAutoHideAsync() ET le timeout de secours sont
+ * désormais dans index.js (qui s'exécute AVANT ce fichier et ses imports).
+ * On se contente ici de cacher le splash quand les polices sont chargées.
+ */
 import {
   Inter_400Regular,
   Inter_500Medium,
@@ -17,31 +24,21 @@ import { AdminProvider } from "@/context/AdminContext";
 import { AlertsProvider } from "@/context/AlertsContext";
 import { ReportsProvider } from "@/context/ReportsContext";
 
-/* ─── Empêcher le masquage automatique du splash ──────────────────────────── */
-if (Platform.OS !== "web") {
-  SplashScreen.preventAutoHideAsync().catch(() => {});
-
-  /* Délai de secours au niveau module (s'exécute même si React crashe) */
-  setTimeout(() => {
-    SplashScreen.hideAsync().catch(() => {});
-  }, 3000);
-}
-
 const queryClient = new QueryClient();
 
-/* ─── Affiche l'erreur sur l'écran au lieu de crasher silencieusement ─────── */
-interface ErrorBoundaryState {
+/* ─── ErrorBoundary : affiche les erreurs de rendu visiblement ────────────── */
+interface EBState {
   error: Error | null;
 }
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
-  ErrorBoundaryState
+  EBState
 > {
   constructor(props: { children: React.ReactNode }) {
     super(props);
     this.state = { error: null };
   }
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+  static getDerivedStateFromError(error: Error): EBState {
     return { error };
   }
   render() {
@@ -50,7 +47,9 @@ class ErrorBoundary extends React.Component<
         <View style={styles.errorBox}>
           <Text style={styles.errorTitle}>Erreur de démarrage</Text>
           <Text style={styles.errorMsg}>{this.state.error.message}</Text>
-          <Text style={styles.errorStack}>{this.state.error.stack?.substring(0, 500)}</Text>
+          <Text style={styles.errorStack}>
+            {this.state.error.stack?.substring(0, 600)}
+          </Text>
         </View>
       );
     }
@@ -66,7 +65,7 @@ export default function RootLayout() {
     Inter_700Bold,
   });
 
-  /* Cacher le splash dès que les polices sont prêtes */
+  /* Cacher le splash dès que les polices sont prêtes (chemin rapide) */
   useEffect(() => {
     if (Platform.OS !== "web" && (fontsLoaded || fontError)) {
       SplashScreen.hideAsync().catch(() => {});
@@ -98,7 +97,7 @@ const styles = StyleSheet.create({
   errorBox: {
     flex: 1,
     backgroundColor: "#fff",
-    padding: 20,
+    padding: 24,
     justifyContent: "center",
   },
   errorTitle: {
@@ -114,7 +113,7 @@ const styles = StyleSheet.create({
   },
   errorStack: {
     fontSize: 11,
-    color: "#666",
+    color: "#888",
     fontFamily: "monospace",
   },
 });
