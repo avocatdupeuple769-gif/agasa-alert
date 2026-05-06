@@ -1,9 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { AppState, AppStateStatus, Platform } from "react-native";
+import { AppState, AppStateStatus } from "react-native";
 
 import { AgasaAlert, DangerLevel } from "@/constants/types";
-import { uploadMedia } from "@/lib/supabase";
+import { supabase, isSupabaseConfigured, uploadMedia } from "@/lib/supabase";
 
 const STORAGE_KEY = "agasa_official_alerts";
 const POLL_INTERVAL_MS = 15_000;
@@ -11,12 +11,6 @@ const EXPIRY_MS = 3 * 30 * 24 * 60 * 60 * 1000;
 
 function isNotExpired(alert: AgasaAlert): boolean {
   return Date.now() - new Date(alert.date).getTime() < EXPIRY_MS;
-}
-
-function getApiBase(): string {
-  if (Platform.OS === "web") return "/api";
-  const domain = process.env.EXPO_PUBLIC_DOMAIN ?? "";
-  return domain ? `https://${domain}/api` : "/api";
 }
 
 interface AlertsContextValue {
@@ -56,20 +50,23 @@ export function AlertsProvider({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
-  /* ── Fetch depuis l'API server (clé service_role côté serveur → bypass RLS) ── */
-  const fetchFromApi = useCallback(async () => {
+  /* ── Fetch directement depuis Supabase (RLS désactivé) ── */
+  const fetchFromSupabase = useCallback(async () => {
+    if (!isSupabaseConfigured) return;
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     try {
-      const res = await fetch(`${getApiBase()}/alerts`, {
-        headers: { "Accept": "application/json" },
-      });
-      if (!res.ok) {
-        console.warn("[Alerts] Erreur API", res.status);
+      const { data, error } = await supabase
+        .from("agasa_alerts")
+        .select("*")
+        .order("date", { ascending: false });
+
+      if (error) {
+        console.warn("[Alerts] Erreur Supabase:", error.message);
         return;
       }
-      const data = (await res.json()) as Record<string, unknown>[];
-      const serverAlerts: AgasaAlert[] = data
+
+      const serverAlerts: AgasaAlert[] = (data as Record<string, unknown>[])
         .map((row) => ({
           id: row.id as string,
           title: row.title as string,
@@ -90,7 +87,7 @@ export function AlertsProvider({ children }: { children: React.ReactNode }) {
         });
       });
     } catch (err) {
-      console.warn("[Alerts] Exception fetchFromApi:", err);
+      console.warn("[Alerts] Exception fetch:", err);
     } finally {
       isFetchingRef.current = false;
     }
@@ -98,22 +95,22 @@ export function AlertsProvider({ children }: { children: React.ReactNode }) {
 
   /* ── Chargement initial ── */
   useEffect(() => {
-    fetchFromApi();
-  }, [fetchFromApi]);
+    fetchFromSupabase();
+  }, [fetchFromSupabase]);
 
   /* ── Polling automatique toutes les 15 secondes ── */
   useEffect(() => {
-    const timer = setInterval(fetchFromApi, POLL_INTERVAL_MS);
+    const timer = setInterval(fetchFromSupabase, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [fetchFromApi]);
+  }, [fetchFromSupabase]);
 
   /* ── Rechargement quand l'app revient au premier plan ── */
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
-      if (next === "active") fetchFromApi();
+      if (next === "active") fetchFromSupabase();
     });
     return () => sub.remove();
-  }, [fetchFromApi]);
+  }, [fetchFromSupabase]);
 
   const persist = useCallback(async (updated: AgasaAlert[]) => {
     try {
@@ -161,26 +158,22 @@ export function AlertsProvider({ children }: { children: React.ReactNode }) {
         return updated;
       });
 
-      try {
-        const res = await fetch(`${getApiBase()}/alerts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            id,
-            title: data.title,
-            message: data.message,
-            danger_level: data.dangerLevel,
-            zone: data.zone,
-            city: data.city ?? null,
-            image_url: imageUrl ?? null,
-            date: newAlert.date,
-          }),
+      /* Insérer dans Supabase */
+      if (isSupabaseConfigured) {
+        const { error } = await supabase.from("agasa_alerts").insert({
+          id,
+          title: data.title,
+          message: data.message,
+          danger_level: data.dangerLevel,
+          zone: data.zone,
+          city: data.city ?? null,
+          image_url: imageUrl ?? null,
+          date: newAlert.date,
         });
-        if (!res.ok) {
-          console.warn("[Alerts] Erreur POST /api/alerts", res.status);
+
+        if (error) {
+          console.warn("[Alerts] Erreur INSERT Supabase:", error.message);
         }
-      } catch (err) {
-        console.warn("[Alerts] Exception POST:", err);
       }
     },
     [persist]
@@ -195,7 +188,7 @@ export function AlertsProvider({ children }: { children: React.ReactNode }) {
         unreadCount: visibleAlerts.filter((a) => !a.isRead).length,
         markAsRead,
         addAlert,
-        refresh: fetchFromApi,
+        refresh: fetchFromSupabase,
       }}
     >
       {children}
