@@ -23,7 +23,7 @@ export const supabase = createClient(
  * Sur web, on utilise un chemin relatif (proxy partagé).
  * Sur mobile natif, on passe par le domaine Replit.
  */
-function getApiBase(): string {
+export function getApiBase(): string {
   if (Platform.OS === "web") {
     return "/api";
   }
@@ -34,16 +34,14 @@ function getApiBase(): string {
 /**
  * Upload un fichier media via l'API server (qui utilise la clé service_role).
  * Retourne l'URL publique Supabase si succès, null sinon.
+ * N'a pas besoin des clés Supabase côté client — le serveur s'en charge.
  */
 export async function uploadMedia(
   uri: string,
   bucket: string,
   path: string
 ): Promise<string | null> {
-  if (!isSupabaseConfigured) return null;
-
   try {
-    /* Récupérer le blob depuis l'URI (blob:, data:, https:, file:) */
     let blob: Blob;
     if (Platform.OS === "web") {
       const res = await fetch(uri);
@@ -53,12 +51,10 @@ export async function uploadMedia(
       }
       blob = await res.blob();
     } else {
-      /* Sur mobile natif, fetch() supporte les URI file:// et content:// */
       const res = await fetch(uri);
       blob = await res.blob();
     }
 
-    /* Envoyer en multipart vers /api/upload */
     const formData = new FormData();
     const filename = path.split("/").pop() ?? "media.jpg";
     formData.append("file", blob, filename);
