@@ -19,7 +19,7 @@
     },
     "android": {
       "package": "ga.agasa.alert",
-      "versionCode": 6,
+      "versionCode": 7,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
