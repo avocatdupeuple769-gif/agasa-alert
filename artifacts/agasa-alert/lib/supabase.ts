@@ -19,67 +19,43 @@ export const supabase = createClient(
 );
 
 /**
- * Résout l'URL de base de l'API selon la plateforme.
- * Sur web, on utilise un chemin relatif (proxy partagé).
- * Sur mobile natif, on passe par le domaine Replit.
- */
-export function getApiBase(): string {
-  if (Platform.OS === "web") {
-    return "/api";
-  }
-  const domain = process.env.EXPO_PUBLIC_DOMAIN ?? "";
-  return domain ? `https://${domain}/api` : "/api";
-}
-
-/**
- * Upload un fichier media via l'API server (qui utilise la clé service_role).
- * Retourne l'URL publique Supabase si succès, null sinon.
- * N'a pas besoin des clés Supabase côté client — le serveur s'en charge.
+ * Upload un fichier media directement dans Supabase Storage.
+ * Fonctionne avec la clé anon car les buckets sont publics (RLS désactivé).
+ * Retourne l'URL publique si succès, null sinon.
  */
 export async function uploadMedia(
   uri: string,
   bucket: string,
   path: string
 ): Promise<string | null> {
+  if (!isSupabaseConfigured) return null;
   try {
     let blob: Blob;
-    if (Platform.OS === "web") {
-      const res = await fetch(uri);
-      if (!res.ok) {
-        console.warn(`[Upload] Impossible de lire le fichier local (${res.status})`);
-        return null;
-      }
-      blob = await res.blob();
-    } else {
-      const res = await fetch(uri);
-      blob = await res.blob();
+    const res = await fetch(uri);
+    if (!res.ok) {
+      console.warn(`[Upload] Impossible de lire le fichier local (${res.status})`);
+      return null;
     }
+    blob = await res.blob();
 
-    const formData = new FormData();
+    const contentType = blob.type || (path.endsWith(".mp4") ? "video/mp4" : "image/jpeg");
     const filename = path.split("/").pop() ?? "media.jpg";
-    formData.append("file", blob, filename);
-    formData.append("bucket", bucket);
-    formData.append("path", path);
 
-    const apiBase = getApiBase();
-    const response = await fetch(`${apiBase}/upload`, {
-      method: "POST",
-      body: formData,
-    });
+    const file = Platform.OS === "web"
+      ? new File([blob], filename, { type: contentType })
+      : blob;
 
-    if (!response.ok) {
-      const body = await response.text();
-      console.warn(`[Upload] Erreur serveur ${response.status}:`, body);
+    const { data, error } = await supabase.storage
+      .from(bucket)
+      .upload(path, file, { contentType, upsert: true });
+
+    if (error) {
+      console.warn("[Upload] Erreur Supabase Storage:", error.message);
       return null;
     }
 
-    const json = (await response.json()) as { url?: string; error?: string };
-    if (json.error || !json.url) {
-      console.warn("[Upload] Réponse serveur invalide:", json);
-      return null;
-    }
-
-    return json.url;
+    const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(data.path);
+    return publicData.publicUrl ?? null;
   } catch (err) {
     console.warn("[Upload] Exception:", err);
     return null;
