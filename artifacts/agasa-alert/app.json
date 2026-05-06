@@ -3,7 +3,7 @@
     "name": "AGASA Alert",
     "slug": "agasa-alert",
     "owner": "libreville",
-    "version": "1.0.0",
+    "version": "1.0.6",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "agasa-alert",
@@ -19,7 +19,7 @@
     },
     "android": {
       "package": "ga.agasa.alert",
-      "versionCode": 5,
+      "versionCode": 6,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
@@ -54,8 +54,7 @@
       ]
     ],
     "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
+      "typedRoutes": true
     },
     "extra": {
       "eas": {
