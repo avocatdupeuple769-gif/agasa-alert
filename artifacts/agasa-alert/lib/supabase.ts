@@ -1,26 +1,25 @@
 import { createClient } from "@supabase/supabase-js";
 import { Platform } from "react-native";
 
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? "";
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "";
+const supabaseUrl =
+  process.env.EXPO_PUBLIC_SUPABASE_URL ||
+  "https://mdcbhlwcpttapkicpeea.supabase.co";
+const supabaseAnonKey =
+  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+  "sb_publishable_B6g1ZcnfKDiOXji0JW40PA_K48SP937";
 
-export const isSupabaseConfigured = !!(supabaseUrl && supabaseAnonKey);
+export const isSupabaseConfigured = true;
 
-export const supabase = createClient(
-  supabaseUrl || "https://placeholder.supabase.co",
-  supabaseAnonKey || "placeholder-key",
-  {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  }
-);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+  },
+});
 
 /**
  * Upload un fichier media directement dans Supabase Storage.
- * Fonctionne avec la clé anon car les buckets sont publics (RLS désactivé).
  * Retourne l'URL publique si succès, null sinon.
  */
 export async function uploadMedia(
@@ -28,22 +27,22 @@ export async function uploadMedia(
   bucket: string,
   path: string
 ): Promise<string | null> {
-  if (!isSupabaseConfigured) return null;
   try {
-    let blob: Blob;
     const res = await fetch(uri);
     if (!res.ok) {
-      console.warn(`[Upload] Impossible de lire le fichier local (${res.status})`);
+      console.warn(`[Upload] Impossible de lire le fichier (${res.status})`);
       return null;
     }
-    blob = await res.blob();
+    const blob = await res.blob();
 
-    const contentType = blob.type || (path.endsWith(".mp4") ? "video/mp4" : "image/jpeg");
+    const contentType =
+      blob.type || (path.endsWith(".mp4") ? "video/mp4" : "image/jpeg");
     const filename = path.split("/").pop() ?? "media.jpg";
 
-    const file = Platform.OS === "web"
-      ? new File([blob], filename, { type: contentType })
-      : blob;
+    const file =
+      Platform.OS === "web"
+        ? new File([blob], filename, { type: contentType })
+        : blob;
 
     const { data, error } = await supabase.storage
       .from(bucket)
@@ -54,7 +53,9 @@ export async function uploadMedia(
       return null;
     }
 
-    const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(data.path);
+    const { data: publicData } = supabase.storage
+      .from(bucket)
+      .getPublicUrl(data.path);
     return publicData.publicUrl ?? null;
   } catch (err) {
     console.warn("[Upload] Exception:", err);
