@@ -1,172 +1,157 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { AppState, AppStateStatus, Platform } from "react-native";
 
-import { DangerLevel, Report, ReportStatus, ReportType } from "@/constants/types";
-import { isSupabaseConfigured, supabase, uploadMedia } from "@/lib/supabase";
+import { DangerLevel, GeoLocation, Report, Reporter, ReportStatus, ReportType } from "@/constants/types";
+import { uploadMedia } from "@/lib/supabase";
 
 const STORAGE_KEY = "agasa_reports";
+const POLL_INTERVAL_MS = 15_000;
+const EXPIRY_MS = 3 * 30 * 24 * 60 * 60 * 1000;
+
+function isNotExpired(report: Report): boolean {
+  return Date.now() - new Date(report.date).getTime() < EXPIRY_MS;
+}
+
+function getApiBase(): string {
+  if (Platform.OS === "web") return "/api";
+  const domain = process.env.EXPO_PUBLIC_DOMAIN ?? "";
+  return domain ? `https://${domain}/api` : "/api";
+}
+
+function rowToReport(row: Record<string, unknown>): Report {
+  return {
+    id: row.id as string,
+    type: row.type as ReportType,
+    description: (row.description as string) || "",
+    photos: (row.photos as string[]) || [],
+    videos: (row.videos as string[]) || [],
+    location: row.location as GeoLocation,
+    date: row.date as string,
+    status: row.status as ReportStatus,
+    dangerLevel: row.danger_level as DangerLevel,
+    isSynced: true,
+    reporter: (row.reporter as Reporter) ?? undefined,
+    priceAmount: (row.price_amount as number) ?? undefined,
+  };
+}
 
 interface ReportsContextValue {
   reports: Report[];
   addReport: (data: Omit<Report, "id" | "date" | "status" | "isSynced">) => Promise<string>;
   updateReportStatus: (id: string, status: ReportStatus) => void;
   getReportById: (id: string) => Report | undefined;
+  refresh: () => Promise<void>;
 }
 
 const ReportsContext = createContext<ReportsContextValue | null>(null);
 
-const MOCK_REPORTS: Report[] = [
-  {
-    id: "r001",
-    type: "perime",
-    description: "Poisson avarié vendu au marché de Mont-Bouët",
-    photos: [],
-    location: { latitude: 0.3924, longitude: 9.4536, city: "Libreville", province: "Estuaire" },
-    date: new Date(Date.now() - 2 * 3600000).toISOString(),
-    status: "in_progress",
-    dangerLevel: "high",
-    isSynced: true,
-  },
-  {
-    id: "r002",
-    type: "hygiene",
-    description: "Restaurant sans conditions sanitaires minimales",
-    photos: [],
-    location: { latitude: 0.4061, longitude: 9.4405, city: "Libreville", province: "Estuaire" },
-    date: new Date(Date.now() - 5 * 3600000).toISOString(),
-    status: "pending",
-    dangerLevel: "medium",
-    isSynced: true,
-  },
-  {
-    id: "r003",
-    type: "prix_abusif",
-    description: "Huile de palme vendue 3x le prix officiel",
-    photos: [],
-    location: { latitude: -0.7167, longitude: 8.7833, city: "Port-Gentil", province: "Ogooué-Maritime" },
-    date: new Date(Date.now() - 24 * 3600000).toISOString(),
-    status: "pending",
-    dangerLevel: "medium",
-    isSynced: true,
-  },
-  {
-    id: "r004",
-    type: "falsifie",
-    description: "Médicaments contrefaits vendus dans un kiosque",
-    photos: [],
-    location: { latitude: 0.3703, longitude: 9.4588, city: "Libreville", province: "Estuaire" },
-    date: new Date(Date.now() - 12 * 3600000).toISOString(),
-    status: "resolved",
-    dangerLevel: "high",
-    isSynced: true,
-  },
-  {
-    id: "r005",
-    type: "intoxication",
-    description: "Plusieurs personnes intoxiquées après avoir mangé au restaurant",
-    photos: [],
-    location: { latitude: -1.6333, longitude: 13.5833, city: "Franceville", province: "Haut-Ogooué" },
-    date: new Date(Date.now() - 3 * 3600000).toISOString(),
-    status: "in_progress",
-    dangerLevel: "high",
-    isSynced: true,
-  },
-  {
-    id: "r006",
-    type: "lieu_sale",
-    description: "Marché avec déchets non collectés depuis plusieurs jours",
-    photos: [],
-    location: { latitude: 0.4200, longitude: 9.4300, city: "Libreville", province: "Estuaire" },
-    date: new Date(Date.now() - 48 * 3600000).toISOString(),
-    status: "pending",
-    dangerLevel: "low",
-    isSynced: true,
-  },
-];
-
 export function ReportsProvider({ children }: { children: React.ReactNode }) {
-  const [reports, setReports] = useState<Report[]>(MOCK_REPORTS);
+  const [reports, setReports] = useState<Report[]>([]);
+  const knownIdsRef = useRef<Set<string>>(new Set());
+  const isFetchingRef = useRef(false);
 
-  /* ── Charger depuis AsyncStorage ── */
+  /* ── Charger depuis AsyncStorage au démarrage ── */
   useEffect(() => {
     (async () => {
       try {
         const stored = await AsyncStorage.getItem(STORAGE_KEY);
         if (stored) {
           const parsed: Report[] = JSON.parse(stored);
-          setReports((prev) => {
-            const existingIds = new Set(prev.map((r) => r.id));
-            const newOnes = parsed.filter((r) => !existingIds.has(r.id));
-            return [...prev, ...newOnes];
-          });
+          const valid = parsed.filter(
+            (r) => isNotExpired(r) && !r.id.match(/^r00\d$/)
+          );
+          if (valid.length !== parsed.length) {
+            await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(valid));
+          }
+          valid.forEach((r) => knownIdsRef.current.add(r.id));
+          setReports(valid);
         }
       } catch {}
     })();
   }, []);
 
-  /* ── Charger depuis Supabase ── */
+  /* ── Fetch depuis l'API server (clé service_role côté serveur → bypass RLS) ── */
+  const fetchFromApi = useCallback(async () => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    try {
+      const res = await fetch(`${getApiBase()}/reports`, {
+        headers: { "Accept": "application/json" },
+      });
+      if (!res.ok) {
+        console.warn("[Reports] Erreur API", res.status);
+        return;
+      }
+      const data = (await res.json()) as Record<string, unknown>[];
+      const serverReports = data
+        .map(rowToReport)
+        .filter(isNotExpired);
+
+      setReports((prev) => {
+        const localOnly = prev.filter((r) => !r.isSynced);
+        const serverIds = new Set(serverReports.map((r) => r.id));
+        const merged = [
+          ...serverReports,
+          ...localOnly.filter((r) => !serverIds.has(r.id)),
+        ];
+        merged.forEach((r) => knownIdsRef.current.add(r.id));
+        return merged;
+      });
+    } catch (err) {
+      console.warn("[Reports] Exception fetchFromApi:", err);
+    } finally {
+      isFetchingRef.current = false;
+    }
+  }, []);
+
+  /* ── Chargement initial ── */
   useEffect(() => {
-    if (!isSupabaseConfigured) return;
-    (async () => {
-      try {
-        const { data } = await supabase
-          .from("reports")
-          .select("*")
-          .order("date", { ascending: false })
-          .limit(100);
+    fetchFromApi();
+  }, [fetchFromApi]);
 
-        if (data && data.length > 0) {
-          const serverReports: Report[] = data.map((row) => ({
-            id: row.id,
-            type: row.type as ReportType,
-            description: row.description || "",
-            photos: row.photos || [],
-            videos: row.videos || [],
-            location: row.location,
-            date: row.date,
-            status: row.status as ReportStatus,
-            dangerLevel: row.danger_level as DangerLevel,
-            isSynced: true,
-            reporter: row.reporter ?? undefined,
-            priceAmount: row.price_amount ?? undefined,
-          }));
-          setReports((prev) => {
-            const existingIds = new Set(prev.map((r) => r.id));
-            const newOnes = serverReports.filter((r) => !existingIds.has(r.id));
-            return [...newOnes, ...prev];
-          });
-        }
-      } catch {}
-    })();
-  }, []);
+  /* ── Polling automatique toutes les 15 secondes ── */
+  useEffect(() => {
+    const timer = setInterval(fetchFromApi, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [fetchFromApi]);
+
+  /* ── Rechargement quand l'app revient au premier plan ── */
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
+      if (next === "active") fetchFromApi();
+    });
+    return () => sub.remove();
+  }, [fetchFromApi]);
 
   const persist = useCallback(async (updated: Report[]) => {
     try {
-      const userReports = updated.filter((r) => !r.id.startsWith("r00"));
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(userReports));
+      await AsyncStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(updated.filter(isNotExpired))
+      );
     } catch {}
   }, []);
 
   const addReport = useCallback(
     async (data: Omit<Report, "id" | "date" | "status" | "isSynced">) => {
       const id = Date.now().toString() + Math.random().toString(36).substr(2, 6);
+      knownIdsRef.current.add(id);
 
-      /* ── Upload photos vers Supabase Storage ── */
+      /* Upload photos */
       let uploadedPhotos = data.photos;
-      if (isSupabaseConfigured && data.photos.length > 0) {
+      if (data.photos.length > 0) {
         const urls = await Promise.all(
           data.photos.map((uri, i) =>
             uploadMedia(uri, "reports-media", `${id}_photo_${i}.jpg`)
           )
         );
-        // Si l'upload réussit → URL Supabase publique permanente
-        // Si l'upload échoue → garder l'URI locale (visible dans la session en cours)
         uploadedPhotos = urls.map((url, i) => url ?? data.photos[i]);
       }
 
-      /* ── Upload vidéos vers Supabase Storage ── */
+      /* Upload vidéos */
       let uploadedVideos: string[] = [];
-      if (isSupabaseConfigured && data.videos && data.videos.length > 0) {
+      if (data.videos && data.videos.length > 0) {
         const urls = await Promise.all(
           data.videos.map((uri, i) =>
             uploadMedia(uri, "reports-media", `${id}_video_${i}.mp4`)
@@ -182,7 +167,7 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
         id,
         date: new Date().toISOString(),
         status: "pending",
-        isSynced: isSupabaseConfigured,
+        isSynced: false,
       };
 
       setReports((prev) => {
@@ -191,10 +176,11 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
         return updated;
       });
 
-      /* ── Sauvegarder dans Supabase ── */
-      if (isSupabaseConfigured) {
-        try {
-          await supabase.from("reports").insert({
+      try {
+        const res = await fetch(`${getApiBase()}/reports`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
             id,
             type: data.type,
             description: data.description,
@@ -207,8 +193,17 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
             price_amount: data.priceAmount ?? null,
             is_synced: true,
             date: newReport.date,
-          });
-        } catch {}
+          }),
+        });
+        if (res.ok) {
+          setReports((prev) =>
+            prev.map((r) => (r.id === id ? { ...r, isSynced: true } : r))
+          );
+        } else {
+          console.warn("[Reports] Erreur POST /api/reports", res.status);
+        }
+      } catch (err) {
+        console.warn("[Reports] Exception POST:", err);
       }
 
       return id;
@@ -223,9 +218,11 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
         persist(updated);
         return updated;
       });
-      if (isSupabaseConfigured) {
-        supabase.from("reports").update({ status }).eq("id", id).then(() => {});
-      }
+      fetch(`${getApiBase()}/reports/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      }).catch((err) => console.warn("[Reports] Exception PATCH:", err));
     },
     [persist]
   );
@@ -236,7 +233,15 @@ export function ReportsProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <ReportsContext.Provider value={{ reports, addReport, updateReportStatus, getReportById }}>
+    <ReportsContext.Provider
+      value={{
+        reports: reports.filter(isNotExpired),
+        addReport,
+        updateReportStatus,
+        getReportById,
+        refresh: fetchFromApi,
+      }}
+    >
       {children}
     </ReportsContext.Provider>
   );
