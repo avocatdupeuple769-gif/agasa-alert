@@ -10,6 +10,7 @@ import {
   Image,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -24,7 +25,7 @@ import colors from "@/constants/colors";
 import { AgasaAlert, DangerLevel, Report, ReportStatus, STATUS_INFO } from "@/constants/types";
 import { useAlerts } from "@/context/AlertsContext";
 import { useReports } from "@/context/ReportsContext";
-import { isSupabaseConfigured, uploadMedia } from "@/lib/supabase";
+import { uploadMedia } from "@/lib/supabase";
 
 function StatCard({ label, value, color, icon }: { label: string; value: number; color: string; icon: string }) {
   return (
@@ -38,8 +39,15 @@ function StatCard({ label, value, color, icon }: { label: string; value: number;
 
 export default function AdminDashboard() {
   const insets = useSafeAreaInsets();
-  const { reports, updateReportStatus } = useReports();
-  const { addAlert } = useAlerts();
+  const { reports, updateReportStatus, refresh: refreshReports } = useReports();
+  const { addAlert, refresh: refreshAlerts } = useAlerts();
+  const [refreshing, setRefreshing] = React.useState(false);
+
+  const handleRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    await Promise.all([refreshReports(), refreshAlerts()]);
+    setRefreshing(false);
+  }, [refreshReports, refreshAlerts]);
 
   const [filterStatus, setFilterStatus] = useState<ReportStatus | "all">("all");
   const [showAlertModal, setShowAlertModal] = useState(false);
@@ -99,7 +107,7 @@ export default function AdminDashboard() {
     setUploadingAlert(true);
 
     let imageUrl: string | undefined;
-    if (alertImageUri && isSupabaseConfigured) {
+    if (alertImageUri) {
       const path = `alerts/${Date.now()}.jpg`;
       imageUrl = (await uploadMedia(alertImageUri, "alerts-media", path)) ?? undefined;
     }
@@ -145,7 +153,7 @@ export default function AdminDashboard() {
           </View>
           <Pressable
             style={styles.logoutBtn}
-            onPress={() => router.replace("/(tabs)/")}
+            onPress={() => router.replace("/(tabs)/alerts")}
           >
             <Ionicons name="close-outline" size={22} color="#fff" />
           </Pressable>
@@ -186,6 +194,14 @@ export default function AdminDashboard() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 24 }]}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor="#fff"
+            colors={[colors.light.primary]}
+          />
+        }
         renderItem={({ item }) => (
           <Pressable onPress={() => router.push(`/(tabs)/admin/${item.id}`)}>
             <View style={styles.reportWrap}>
